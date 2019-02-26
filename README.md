@@ -6,7 +6,7 @@ This is mainly for CTFs.
 
 ## Installation
 
-You only need to have installed wfuzz
+You only need to have installed **wfuzz**
 
 ```bash
 pip3 install wfuzz
@@ -14,12 +14,12 @@ pip3 install wfuzz
 
 ## Features
 
-- [+] Get and show GET code, cookies sent by server and contentent if redirect (all of this in the provided url)
-- [+] Fuzz **HTTP Verbs(Methods)**: GET, HEAD, POST, DELETE, CONNECT, OPTIONS, TRACE, PUT, INVENTED
-- [+] Fuzz **HTTP Headers**: Forwarded, X-Forwarded-For, X-ProxyUser-Ip, Referer, User-Agent, Cookies
-- [+] Fuzz **HTTP Authentication**: Basic and NTLM
-- [+] Filter by code or by strings (appearing or not)
-- [+] Autocontained
+- [+] Get and show **GET code**, **cookies sent** by server and **content if redirect** (all of this in the provided url)
+- [+] Fuzz **HTTP Verbs(Methods)**: *GET, HEAD, POST, DELETE, CONNECT, OPTIONS, TRACE, PUT, INVENTED*
+- [+] Fuzz **HTTP Headers**: *Forwarded, X-Forwarded-For, X-ProxyUser-Ip, Referer, User-Agent, Cookies*
+- [+] Fuzz **HTTP Authentication**: *Basic and NTLM*
+- [+] **Filter** by code or by words (appearing or not)
+- [+] **Autocontained**
 
 ## Example
 
