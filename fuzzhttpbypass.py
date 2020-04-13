@@ -59,6 +59,17 @@ def isIP(param):
         return False
     return True
 
+
+def fuzzPaths(url, filter2use, proxy):
+    'Method to FUZZ paths'
+    color_print("[+] Fuzzing Path variations...")
+    paths = "%2e-%252e-%ef%bc%8f"
+    url_l = url.split("/")
+    url_l.insert(-1,"FUZZ")
+    url = "/".join(url_l)
+    wfuzz(["-z list,"+paths], filter2use, proxy, "", url)
+
+
 def fuzzMethods(url, filter2use, proxy):
     'Method to FUZZ http methods'
     color_print("[+] Fuzzing HTTP Verbs (methods)...")
@@ -66,7 +77,7 @@ def fuzzMethods(url, filter2use, proxy):
     #PATCH method doesnt work, the program gets stucked
     wfuzz(["-z list,"+methods], filter2use, proxy, " -X FUZZ", url)
 
-    #If only 1 depth of file ptah, checks different indexes
+    #If only 1 depth of file path, checks different indexes
     proto, domain, path = getPartsFromUrl(url)
     if path.count("/") == 1:
         for p in ["index.php", "index", "index.html", "index.asp", "index.aspx", ""]:
@@ -157,6 +168,7 @@ def main():
                 "Mozilla/5.0 (iPhone; CPU iPhone OS 12_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/12.0 Mobile/15E148 Safari/604.1",
                 "Mozilla/5.0 (Linux; U; Android 4.4.2; es-es; SM-T210R Build/KOT49H) AppleWebKit/534.30 (KHTML, like Gecko) Version/4.0 Safari/534.30",
                 "Mozilla/5.0 (Macintosh; U; PPC Mac OS X Mach-O; en-US; rv:1.7.8) Gecko/20050511 Firefox/1.0.4",
+                "Mozilla/5.0 (Linux; Android 9; SM-G960F Build/PPR1.180610.011; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/74.0.3729.157 Mobile Safari/537.36",
                 "Googlebot", "Bingbot", "admin" ]
         
     with open("/tmp/list-ua.txt", 'w') as f:
@@ -186,6 +198,7 @@ def main():
     color_print("[i] IPs that are going to be use for FUZZING: "+ips)
 
     print("")
+    fuzzPaths(url, filter2use, proxy)
     fuzzMethods(url, filter2use, proxy)
     fuzzHeaders(url, ips, filter2use, proxy, cookies, passwords)
     fuzzAutehntication(url, filter2use, proxy, users, passwords)
