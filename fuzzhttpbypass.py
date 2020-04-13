@@ -82,6 +82,15 @@ def fuzzHeaders(url, ips, filter2use, proxy, cookies, passwords):
     color_print("\t[+] X-Forwarded-For")
     wfuzz(["-z list,"+ips], filter2use, proxy, "-H X-Forwarded-For:FUZZ", url)
 
+    color_print("\t[+] X-Originating-IP")
+    wfuzz(["-z list,"+ips], filter2use, proxy, "-H X-Originating-IP:FUZZ", url)
+    
+    color_print("\t[+] X-Remote-IP")
+    wfuzz(["-z list,"+ips], filter2use, proxy, "-H X-Remote-IP:FUZZ", url)
+    
+    color_print("\t[+] X-Remote-Addr")
+    wfuzz(["-z list,"+ips], filter2use, proxy, "-H X-Remote-Addr:FUZZ", url)
+    
     color_print("\t[+] X-ProxyUser-Ip")
     wfuzz(["-z list,"+ips], filter2use, proxy, "-H X-ProxyUser-Ip:FUZZ", url)
 
