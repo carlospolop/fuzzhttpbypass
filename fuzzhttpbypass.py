@@ -11,7 +11,7 @@ def parse_main_args(args=None):
     parser.add_argument( '-u','--url', required=True,
                         help='Url to test (http://example.com/index.php')
     parser.add_argument('-f','--filter', required=True,
-                        help='Select filter if form: contains/notcontains,<code>/<string> (--filter contains 200) (--filter notcontains "Invalid Access")')
+                        help='Select filter if form: contains/notcontains,<code>/<string> (--filter contains,200) (--filter notcontains "Invalid Access")')
     parser.add_argument('-i','--ip', default="",
                         help='Add this ip, when trying to impersonate via http headers (by default the IP of the domain/ip of the url is used)')
     #parser.add_argument('-p','--proxy', default="",
@@ -42,8 +42,8 @@ def color_print(to_print):
 def getPartsFromUrl(url):
     'Get parts of a url'
     proto, rest = url.split("//")
-    domain, rest = rest.split("/") if len(rest.split("/")) > 1 else (rest,"")
-    path = "/" + "/".join(rest)
+    domain = rest.split("/")[0]
+    path = "/" + "/".join(rest.split("/")[1:]) if len(rest.split("/")) > 1 else "/"
     return (proto, domain, path)
 
 def getIPsFromDomain(domain):
