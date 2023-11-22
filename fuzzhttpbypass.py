@@ -90,21 +90,45 @@ def fuzzHeaders(url, ips, filter2use, proxy, cookies, passwords):
     color_print("\t[+] Forwarded")
     wfuzz(["-z list,"+ips+"_hidden-_secret-unknown", "-z list,"+ips, "-z list,"+ips, "-z list,http-https"], filter2use, proxy, "-H 'Forwarded:for=FUZZ;by=FUZ2Z;host=FUZ3Z;proto=FUZ4Z'", url)
     
-    color_print("\t[+] X-Forwarded-For")
-    wfuzz(["-z list,"+ips], filter2use, proxy, "-H X-Forwarded-For:FUZZ", url)
-
     color_print("\t[+] X-Originating-IP")
     wfuzz(["-z list,"+ips], filter2use, proxy, "-H X-Originating-IP:FUZZ", url)
+
+    color_print("\t[+] X-Forwarded-For")
+    wfuzz(["-z list,"+ips], filter2use, proxy, "-H X-Forwarded-For:FUZZ", url)
+    
+    color_print("\t[+] X-Forwarded")
+    wfuzz(["-z list,"+ips], filter2use, proxy, "-H X-Forwarded:FUZZ", url)
+
+    color_print("\t[+] Forwarded-For")
+    wfuzz(["-z list,"+ips], filter2use, proxy, "-H Forwarded-For:FUZZ", url)
     
     color_print("\t[+] X-Remote-IP")
     wfuzz(["-z list,"+ips], filter2use, proxy, "-H X-Remote-IP:FUZZ", url)
-    
+
     color_print("\t[+] X-Remote-Addr")
     wfuzz(["-z list,"+ips], filter2use, proxy, "-H X-Remote-Addr:FUZZ", url)
-    
+
     color_print("\t[+] X-ProxyUser-Ip")
     wfuzz(["-z list,"+ips], filter2use, proxy, "-H X-ProxyUser-Ip:FUZZ", url)
 
+    color_print("\t[+] X-Original-URL")
+    wfuzz(["-z list,"+ips], filter2use, proxy, "-H X-Original-URL:FUZZ", url)
+
+    color_print("\t[+] Client-IP")
+    wfuzz(["-z list,"+ips], filter2use, proxy, "-H Client-IP:FUZZ", url)
+
+    color_print("\t[+] True-Client-IP")
+    wfuzz(["-z list,"+ips], filter2use, proxy, "-H True-Client-IP:FUZZ", url)
+
+    color_print("\t[+] Cluster-Client-IP")
+    wfuzz(["-z list,"+ips], filter2use, proxy, "-H Cluster-Client-IP:FUZZ", url)
+    
+    color_print("\t[+] X-ProxyUser-Ip")
+    wfuzz(["-z list,"+ips], filter2use, proxy, "-H X-ProxyUser-Ip:FUZZ", url)
+    
+    color_print("\t[+] Host")
+    wfuzz(["-z list,"+ips], filter2use, proxy, "-H Host:FUZZ", url)
+    
     color_print("\t[+] Referer")
     wfuzz(["-z list,"+url], filter2use, proxy, "-H Referer:FUZZ", url)
 
