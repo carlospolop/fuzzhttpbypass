@@ -134,8 +134,12 @@ def wfuzz(lists ,filter2use, proxy, extra, url):
     cmd = " ".join(lists)+" "+filter2use+" "+proxy+" "+extra+" "+" --req-delay 30 --conn-delay 30 "+url
     cmd = cmd.replace("  "," ").replace("  "," ").replace("  "," ")
     color_print("[c] Trying: "+cmd)
-    for r in get_session(cmd).fuzz():
-        print(r)
+    try:
+        for r in get_session(cmd).fuzz():
+            print(r)
+    except Exception as e:
+        color_print("Failed "+cmd+" with error "+e)
+
 
 def main():
     #url, ip, f2u, proxy = parse_main_args(sys.argv[1:])
