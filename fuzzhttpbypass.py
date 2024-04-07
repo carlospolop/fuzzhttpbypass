@@ -66,6 +66,9 @@ def fuzzPaths(url, filter2use, proxy):
     paths = "%2e-%252e-%ef%bc%8f"
     url_l = url.split("/")
     url_l.insert(-1,"FUZZ")
+    if len(url_l) <4:
+        url_l.append("")
+
     url = "/".join(url_l)
     wfuzz(["-z list,"+paths], filter2use, proxy, "", url)
 
