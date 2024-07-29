@@ -71,6 +71,9 @@ def fuzzPaths(url, filter2use, proxy):
     paths = "%2e-%252e-%ef%bc%8f"
     url_l = url.split("/")
     url_l.insert(-1,"FUZZ")
+    if len(url_l) <4:
+        url_l.append("")
+
     url = "/".join(url_l)
     wfuzz(["-z list,"+paths], filter2use, proxy, "", url)
 
@@ -163,8 +166,12 @@ def wfuzz(lists ,filter2use, proxy, extra, url):
     cmd = " ".join(lists)+" "+filter2use+" "+proxy+" "+extra+" "+" --req-delay 30 --conn-delay 30 -Z "+url
     cmd = cmd.replace("  "," ").replace("  "," ").replace("  "," ")
     color_print("[c] Trying: "+cmd)
-    for r in get_session(cmd).fuzz():
-        print(r)
+    try:
+        for r in get_session(cmd).fuzz():
+            print(r)
+    except Exception as e:
+        color_print("Failed "+cmd+" with error "+e)
+
 
 def main():
     #url, ip, f2u, bypass, proxy = parse_main_args(sys.argv[1:])
