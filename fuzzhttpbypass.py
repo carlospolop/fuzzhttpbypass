@@ -6,6 +6,9 @@ from wfuzz.api import get_session
 
 from bs4 import BeautifulSoup, Comment
 
+import urllib3
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
 def parse_main_args(args=None):
     parser = argparse.ArgumentParser(description='Process some integers.')
     parser.add_argument( '-u','--url', required=True,
@@ -14,12 +17,14 @@ def parse_main_args(args=None):
                         help='Select filter if form: contains/notcontains,<code>/<string> (--filter contains,200) (--filter notcontains "Invalid Access")')
     parser.add_argument('-i','--ip', default="",
                         help='Add this ip, when trying to impersonate via http headers (by default the IP of the domain/ip of the url is used)')
+    parser.add_argument('-b','--bypass-verification', action='store_true',
+                        help='Bypass SSL certificate verification, useful in case the target site is misconfigured')
     #parser.add_argument('-p','--proxy', default="",
     #                    help='Add a proxy in WFUZZ format (-p 127.0.0.1:8080:HTML))')
     
     args = parser.parse_args()
     #return (args.url, args.ip, args.filter, args.proxy) #Proxy thing, read main function
-    return (args.url, args.ip, args.filter)
+    return (args.url, args.ip, args.filter, args.bypass_verification)
 
 def color_print(to_print):
     NoC = "\033[0m"
@@ -131,15 +136,15 @@ def find_comments(text):
 
 def wfuzz(lists ,filter2use, proxy, extra, url):
     'Launch wfuzz with custom options'
-    cmd = " ".join(lists)+" "+filter2use+" "+proxy+" "+extra+" "+" --req-delay 30 --conn-delay 30 "+url
+    cmd = " ".join(lists)+" "+filter2use+" "+proxy+" "+extra+" "+" --req-delay 30 --conn-delay 30 -Z "+url
     cmd = cmd.replace("  "," ").replace("  "," ").replace("  "," ")
     color_print("[c] Trying: "+cmd)
     for r in get_session(cmd).fuzz():
         print(r)
 
 def main():
-    #url, ip, f2u, proxy = parse_main_args(sys.argv[1:])
-    url, ip, f2u = parse_main_args(sys.argv[1:])
+    #url, ip, f2u, bypass, proxy = parse_main_args(sys.argv[1:])
+    url, ip, f2u, bypass = parse_main_args(sys.argv[1:])
     proxy = "" #If you use the proxy the HTTP methods POST and PUT stuck the program, so dont use a proxy until this is fixed!! (is all prepare for using it)
 
     if len(f2u.split(",")) != 2:
@@ -175,7 +180,12 @@ def main():
         for ua in useragents:
             f.write(ua+"\n")
 
-    r = requests.get(url)
+    try:
+        r = requests.get(url, verify=(not bypass))
+    except requests.exceptions.SSLError:
+        print("\n\033[31m[!]\033[0m There was a problem resolving the SSL certificate for that site, did you enable the `-b` flag to bypass verification?")
+        return
+
     status_code = r.status_code
     body = r.text
     resp_length = len(body)
@@ -208,8 +218,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-
-
-#No funciona: espacios entre parametros o dentro de los parametros
-#DIgest Auth
-#Metodos post put patch nunca acaban

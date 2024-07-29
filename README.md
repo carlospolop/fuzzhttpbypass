@@ -31,7 +31,6 @@ Responses that do not contains the code 240 (show all) in http://example.com/ind
 
 `./fuzzhttpbypass.py -f notcontains,240 -u http://example.com/index.php`
 
-Responses that do not contains the word "Invalid" in http://example.com/index.php (Currently, the Wfuzz API has problems with spaces so whe can't use them)
+Responses that do not contains the word "Invalid" in http://example.com/index.php (Currently, the Wfuzz API has problems with spaces so we can't use them)
 
 `./fuzzhttpbypass.py -f notcontains,Invalid -u http://example.com/index.php`
-
