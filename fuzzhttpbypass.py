@@ -7,14 +7,11 @@ import argparse
 import asyncio
 import base64
 import hashlib
-import http.client
-import http.cookies
 import ipaddress
 import json
 import math
 import re
 import secrets
-import ssl
 import sys
 import time
 from copy import copy
@@ -33,6 +30,10 @@ PATH_HEADERS = ("X-Original-URL", "X-Rewrite-URL", "X-Forwarded-Uri", "X-Origina
 PATH_HEADERS_LOWER = frozenset(header.lower() for header in PATH_HEADERS)
 OVERRIDE_HEADERS = ("X-HTTP-Method-Override", "X-Method-Override", "X-HTTP-Method")
 CHECKS = ("paths", "methods", "headers", "auth", "protocol")
+VOLATILE_FIELD = re.compile(
+    r"(?i)(\b(?:nonce|timestamp|request[_-]?id|trace[_-]?id|csrf(?:token)?)"
+    r"\b\s*[:=]\s*['\"]?)[A-Za-z0-9._:/+-]+"
+)
 
 
 @dataclass(frozen=True)
@@ -66,6 +67,8 @@ class Observation:
 
 
 def validate_url(url: str) -> str:
+    if any(character in url for character in "\r\n\t"):
+        raise ValueError("URL contains a control character")
     parts = urlsplit(url)
     if parts.scheme not in ("http", "https") or not parts.hostname:
         raise ValueError(f"Expected an absolute HTTP(S) URL: {url}")
@@ -75,7 +78,7 @@ def validate_url(url: str) -> str:
         _ = parts.port
     except ValueError as exc:
         raise ValueError(f"Invalid port in URL: {url}") from exc
-    return url
+    return urlunsplit((parts.scheme, parts.netloc, parts.path, parts.query, ""))
 
 
 def with_path(url: str, path: str) -> str:
@@ -116,8 +119,15 @@ def path_variants(url: str) -> list[tuple[str, str]]:
         "extension suffix": clean + ".json",
         "case change": parent + "/" + leaf.swapcase(),
     }
+    if "." not in leaf:
+        variants.update({
+            "index": clean + "/index",
+            "index php": clean + "/index.php",
+            "index html": clean + "/index.html",
+        })
     if leaf:
-        variants["encoded first character"] = parent + f"/%{ord(leaf[0]):02x}{leaf[1:]}"
+        encoded = "".join(f"%{byte:02X}" for byte in leaf[0].encode("utf-8"))
+        variants["encoded first character"] = parent + "/" + encoded + leaf[1:]
     return [(name, with_path(url, value)) for name, value in variants.items() if value != path]
 
 
@@ -203,7 +213,8 @@ def generate_probes(url: str, checks: set[str], ips: list[str], basic: list[str]
                     custom_paths: list[str] | None = None,
                     custom_headers: list[tuple[str, str]] | None = None,
                     cookies: dict[str, str] | None = None,
-                    cookie_values: list[str] | None = None) -> list[Probe]:
+                    cookie_values: list[str] | None = None,
+                    form_body: bool = False) -> list[Probe]:
     parts = urlsplit(url)
     path = parts.path or "/"
     probes = []
@@ -243,12 +254,21 @@ def generate_probes(url: str, checks: set[str], ips: list[str], basic: list[str]
                         headers=((header, override),))
             overrides = ("GET", "POST", "PUT", "DELETE") if unsafe_methods else ("GET", "POST")
             for override in overrides:
-                delimiter = "&" if parts.query else "?"
+                query = (parts.query + "&" if parts.query else "") + "_method=" + override
                 add("methods", f"{method} with _method={override}", method,
-                    probe_url=url + delimiter + "_method=" + override)
+                    probe_url=urlunsplit((parts.scheme, parts.netloc, parts.path, query, "")))
+                if method == "POST" and (base_body is None or form_body):
+                    content = base_body or b""
+                    separator = b"&" if content else b""
+                    add("methods", f"POST form _method={override}", "POST",
+                        headers=(("Content-Type", "application/x-www-form-urlencoded"),),
+                        body=content + separator + f"_method={override}".encode())
 
     if "headers" in checks:
-        for ip in dict.fromkeys(["127.0.0.1", "127.0.0.2", "::1"] + ips):
+        for ip in dict.fromkeys([
+            "127.0.0.1", "127.0.0.2", "127.1", "localhost",
+            "::1", "::ffff:127.0.0.1",
+        ] + ips):
             for header in IP_HEADERS:
                 add("headers", f"{header}: {ip}", headers=((header, ip),))
             forwarded_ip = f"[{ip}]" if ":" in ip else ip
@@ -258,12 +278,16 @@ def generate_probes(url: str, checks: set[str], ips: list[str], basic: list[str]
                 headers=(("X-Forwarded-For", f"198.51.100.1, {ip}"),))
             add("headers", f"X-Forwarded-For chain starting {ip}",
                 headers=(("X-Forwarded-For", f"{ip}, 198.51.100.1"),))
-        for value in ("localhost", "127.0.0.1", parts.hostname or ""):
+        host_values = ["localhost", "127.0.0.1", parts.netloc]
+        if parts.hostname and ":" not in parts.hostname:
+            host_values.append(parts.hostname)
+        for value in dict.fromkeys(host_values):
             for header in ("Host", "X-Forwarded-Host", "X-Forwarded-Server",
                            "X-HTTP-Host-Override", "X-Host"):
                 add("headers", f"{header}: {value}", headers=((header, value),))
+            forwarded_host = f'"{value}"' if ":" in value else value
             add("headers", f"Forwarded host={value}",
-                headers=(("Forwarded", f"host={value}"),))
+                headers=(("Forwarded", f"host={forwarded_host}"),))
         for value in ("http", "https"):
             for header in ("X-Forwarded-Proto", "X-Forwarded-Scheme", "X-Url-Scheme"):
                 add("headers", f"{header}: {value}", headers=((header, value),))
@@ -342,8 +366,7 @@ def classify(observation: Observation, baseline: Observation, control: Observati
         return None
     if observation.status in (401, 403, 404) or observation.status >= 500:
         return None
-    if (observation.digest == control.digest and observation.location == control.location
-            and set(observation.cookies) == set(control.cookies)):
+    if resembles_control(observation, control):
         return None
     new_cookie_names = set(observation.cookies) - set(baseline.cookies)
     if (baseline.status in (401, 403, 404) or 300 <= baseline.status < 400) \
@@ -353,42 +376,18 @@ def classify(observation: Observation, baseline: Observation, control: Observati
     return "changed"
 
 
-def send_raw_path(probe: Probe, headers: dict[str, str], timeout: float,
-                  verify: bool, max_bytes: int) -> Observation:
-    """Use http.client for literal /./ and /../ paths that HTTPX normalizes."""
-    parts = urlsplit(probe.url)
-    connection_class = http.client.HTTPSConnection if parts.scheme == "https" else http.client.HTTPConnection
-    kwargs = {"timeout": timeout}
-    if parts.scheme == "https":
-        kwargs["context"] = ssl.create_default_context() if verify else ssl._create_unverified_context()
-    connection = connection_class(parts.hostname, parts.port, **kwargs)
-    started = time.monotonic()
-    try:
-        target = parts.path or "/"
-        if parts.query:
-            target += "?" + parts.query
-        connection.request(probe.method, target, body=probe.body, headers=headers)
-        response = connection.getresponse()
-        content = response.read(max_bytes + 1)
-        truncated = len(content) > max_bytes
-        content = content[:max_bytes]
-        cookies = http.cookies.SimpleCookie()
-        for name, value in response.getheaders():
-            if name.lower() == "set-cookie":
-                cookies.load(value)
-        return Observation(
-            status=response.status, location=response.getheader("Location"),
-            length=len(content), digest=hashlib.sha256(content).hexdigest(),
-            body=content.decode("utf-8", errors="replace"),
-            elapsed_ms=round((time.monotonic() - started) * 1000),
-            truncated=truncated,
-            cookies={name: morsel.value for name, morsel in cookies.items()},
-        )
-    except (OSError, http.client.HTTPException, ValueError) as exc:
-        return Observation(error=f"{type(exc).__name__}: {exc}",
-                           elapsed_ms=round((time.monotonic() - started) * 1000))
-    finally:
-        connection.close()
+def resembles_control(observation: Observation, control: Observation) -> bool:
+    """Suppress identical generic pages, allowing common volatile field values."""
+    if observation.location != control.location or set(observation.cookies) != set(control.cookies):
+        return False
+    if observation.digest == control.digest:
+        return True
+    if not observation.body or not control.body:
+        return False
+    return (
+        VOLATILE_FIELD.sub(r"\1<VALUE>", observation.body)
+        == VOLATILE_FIELD.sub(r"\1<VALUE>", control.body)
+    )
 
 
 def send_ntlm(probe: Probe, headers: dict[str, str], timeout: float, verify: bool,
@@ -465,15 +464,23 @@ class Scanner:
                 return await asyncio.to_thread(send_ntlm, probe, dict(headers), self.args.timeout,
                                                not self.args.bypass_verification, self.args.proxy,
                                                self.args.max_response_bytes)
-            if probe.raw_path:
-                if self.args.proxy:
-                    return Observation(error="literal path probes require a direct connection")
-                return await asyncio.to_thread(send_raw_path, probe, dict(headers), self.args.timeout,
-                                               not self.args.bypass_verification,
-                                               self.args.max_response_bytes)
             try:
-                async with client.stream(probe.method, probe.url, headers=headers,
-                                         content=probe.body, follow_redirects=False) as response:
+                extensions = {}
+                if probe.raw_path:
+                    parts = urlsplit(probe.url)
+                    target = parts.path or "/"
+                    if parts.query:
+                        target += "?" + parts.query
+                    if (self.args.proxy and urlsplit(self.args.proxy).scheme in ("http", "https")
+                            and parts.scheme == "http"):
+                        target = f"{parts.scheme}://{parts.netloc}{target}"
+                    extensions["target"] = target.encode("ascii")
+                request = client.build_request(
+                    probe.method, probe.url, headers=headers, content=probe.body,
+                    extensions=extensions,
+                )
+                response = await client.send(request, stream=True, follow_redirects=False)
+                try:
                     chunks = []
                     size = 0
                     truncated = False
@@ -492,7 +499,9 @@ class Scanner:
                         elapsed_ms=round((time.monotonic() - started) * 1000),
                         truncated=truncated, cookies=dict(response.cookies),
                     )
-            except (httpx.HTTPError, ValueError) as exc:
+                finally:
+                    await response.aclose()
+            except (httpx.HTTPError, ValueError, UnicodeError) as exc:
                 return Observation(error=f"{type(exc).__name__}: {exc}",
                                    elapsed_ms=round((time.monotonic() - started) * 1000))
 
@@ -520,7 +529,10 @@ class Scanner:
                                  self.args.method, self.args.data, self.args.ntlm,
                                  self.args.bearer, self.args.path_variant,
                                  custom_headers,
-                                 effective_cookies, self.args.cookie_value)
+                                 effective_cookies, self.args.cookie_value,
+                                 self.headers.get("content-type", "").lower().startswith(
+                                     "application/x-www-form-urlencoded"
+                                 ))
         if self.args.max_requests:
             probes = probes[:self.args.max_requests]
         findings = []
@@ -553,9 +565,7 @@ class Scanner:
                     return
                 if self.success and self.success.search(control_result.body):
                     return
-                if (control_result.status, control_result.digest, control_result.location,
-                        set(control_result.cookies)) == (
-                        result.status, result.digest, result.location, set(result.cookies)):
+                if resembles_control(result, control_result):
                     return
             findings.append({
                 "classification": kind, "category": probe.category, "name": probe.name,

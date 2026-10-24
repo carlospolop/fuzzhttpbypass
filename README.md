@@ -26,11 +26,11 @@ fuzzhttpbypass -u https://example.test/admin --path-variant /ADMIN --header-vari
 fuzzhttpbypass --request-file captured-request.txt --request-proto https --success-regex 'Private Data'
 ```
 
-The tool sends a baseline GET and a random missing sibling path, then probes
+The tool sends a baseline request and a random missing sibling path, then probes
 the selected categories. It does not follow redirects. Each finding is sent
 again before reporting it. For header, method, authentication and protocol
 findings, it also tries the same variation on a missing path to reject generic
-responses.
+responses. Known volatile fields such as nonces are ignored in that comparison.
 
 | Classification | Meaning |
 | --- | --- |
@@ -48,11 +48,13 @@ The baseline's response cookies are carried into subsequent requests unless a
 ## Checks
 
 - **Paths:** trailing and duplicate slashes, dot and parent segments, encoded
-  separators, semicolon and dot suffixes, and case changes.
+  separators, semicolon and dot suffixes, case changes, and directory index files.
 - **Methods:** HEAD, POST, OPTIONS, TRACE, PROPFIND, an invented method, and
-  common method override headers. `--unsafe-methods` adds PUT, PATCH, DELETE.
+  method override headers, query parameters, and form bodies.
+  `--unsafe-methods` adds PUT, PATCH, DELETE.
 - **Headers:** forwarding IP, host, protocol and path headers, plus Referer,
-  Origin and User-Agent variants. `-i` adds an IP candidate.
+  Origin and User-Agent variants, including alternate loopback forms.
+  `-i` adds an IP candidate.
 - **Auth:** Basic or NTLM credentials explicitly supplied with repeated
   `--basic USER:PASS`, `--ntlm DOMAIN\USER:PASS`, or `--bearer TOKEN`.
   `--cookie-value` replaces each observed cookie value in turn. The tool
@@ -69,9 +71,8 @@ The `--request-file` option imports an HTTP/1.0 or HTTP/1.1 request line,
 headers, and body from a captured request. The tool recalculates
 `Content-Length`; it rejects duplicate or folded headers and
 `Transfer-Encoding` templates, which require exact wire-level handling.
-Literal dot path probes use Python's HTTP/1.1 client, which requires a direct
-connection; when `--proxy` is set, those probes appear as request errors in
-the JSON report. NTLM probes also use HTTP/1.1.
+Literal dot path probes preserve the request target through the configured
+HTTP client and proxy. NTLM probes use HTTP/1.1.
 
 The old Wfuzz `-W` filter and `-f` examples are removed. Use
 `--success-regex`, `--show-changed`, and the JSON report.

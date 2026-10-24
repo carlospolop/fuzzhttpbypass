@@ -10,6 +10,8 @@ from io import StringIO
 from pathlib import Path
 from typing import ClassVar
 
+import httpx
+
 import fuzzhttpbypass as tool
 
 
@@ -17,6 +19,7 @@ class Handler(BaseHTTPRequestHandler):
     paths: ClassVar[list[str]] = []
     unstable_count = 0
     dynamic_count = 0
+    generic_count = 0
 
     def log_message(self, *_args):
         pass
@@ -25,6 +28,18 @@ class Handler(BaseHTTPRequestHandler):
         self.paths.append(self.path)
         if self.headers.get("X-Generic") == "yes":
             status, body = 200, b"generic page"
+            self.send_response(status)
+        elif self.headers.get("X-Dynamic-Generic") == "yes":
+            Handler.generic_count += 1
+            status = 200
+            body = (b"Login form, please sign in. " * 10
+                    + f"nonce={Handler.generic_count}".encode())
+            self.send_response(status)
+        elif self.headers.get("X-Large-Generic") == "yes":
+            status = 200
+            body = (b"x" * 5000
+                    + (b"PRIVATE_CONTENT" if self.path == "/large"
+                       else b"generic_content"))
             self.send_response(status)
         elif self.path.startswith("/admin"):
             allowed = self.headers.get("X-Forwarded-For") == "127.0.0.1"
@@ -102,7 +117,8 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 status, body = 403, b"denied"
             self.send_response(status)
-        elif self.path.startswith("/generic"):
+        elif (self.path.startswith("/generic") or self.path == "/large"
+              or self.path in ("/formoverride", "/formbody")):
             status, body = 403, b"denied"
             self.send_response(status)
         else:
@@ -123,6 +139,24 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         body = self.rfile.read(int(self.headers.get("Content-Length", "0")))
+        if self.path == "/formbody":
+            allowed = body == b"foo=bar&_method=GET"
+            allowed &= self.headers.get("Content-Type") == "application/x-www-form-urlencoded"
+            payload = b"FORM_BODY_SECRET" if allowed else b"denied"
+            self.send_response(200 if allowed else 403)
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+            return
+        if self.path == "/formoverride":
+            allowed = body == b"_method=GET"
+            allowed &= self.headers.get("Content-Type") == "application/x-www-form-urlencoded"
+            payload = b"FORM_SECRET" if allowed else b"denied"
+            self.send_response(200 if allowed else 403)
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+            return
         if self.path == "/post":
             allowed = body == b'{"token":"abc"}'
             allowed &= self.headers.get("X-Forwarded-For") == "127.0.0.1"
@@ -134,6 +168,21 @@ class Handler(BaseHTTPRequestHandler):
             return
         self.send_response(405)
         self.end_headers()
+
+
+class ProxyHandler(BaseHTTPRequestHandler):
+    paths: ClassVar[list[str]] = []
+
+    def log_message(self, *_args):
+        pass
+
+    def do_GET(self):
+        self.paths.append(self.path)
+        body = self.path.encode()
+        self.send_response(200)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
 
 
 class ScannerTests(unittest.TestCase):
@@ -183,6 +232,25 @@ class ScannerTests(unittest.TestCase):
         asyncio.run(tool.run(self.args("/admin", "--checks", "paths")))
         self.assertIn("/./admin", Handler.paths)
         self.assertIn("/x/../admin", Handler.paths)
+
+    def test_literal_dot_paths_through_http_proxy(self):
+        proxy = ThreadingHTTPServer(("127.0.0.1", 0), ProxyHandler)
+        thread = threading.Thread(target=proxy.serve_forever, daemon=True)
+        thread.start()
+        try:
+            ProxyHandler.paths.clear()
+            args = self.args(
+                "/admin", "--checks", "paths",
+                "--proxy", f"http://127.0.0.1:{proxy.server_port}",
+            )
+            result = asyncio.run(tool.run(args))[0]
+            self.assertEqual(result["errors"], [])
+            self.assertTrue(any("/./admin" in path for path in ProxyHandler.paths))
+            self.assertTrue(any("/x/../admin" in path for path in ProxyHandler.paths))
+        finally:
+            proxy.shutdown()
+            proxy.server_close()
+            thread.join()
 
     def test_post_body_is_preserved_for_header_probes(self):
         result = asyncio.run(tool.run(self.args(
@@ -305,8 +373,21 @@ class ScannerTests(unittest.TestCase):
         self.assertEqual(tool.validate_url(url), url)
         self.assertTrue(all("?x=1" in value for _, value in tool.path_variants(url)))
         self.assertEqual(tool.parse_ips(["::1", "127.0.0.1"]), ["::1", "127.0.0.1"])
+        host_probes = tool.generate_probes(url, {"headers"}, [], [])
+        self.assertTrue(any(
+            p.headers == (("Host", "[::1]:8443"),) for p in host_probes
+        ))
+        self.assertFalse(any(
+            p.headers == (("Host", "::1"),) for p in host_probes
+        ))
         with self.assertRaises(ValueError):
             tool.validate_url("ftp://example.org/admin")
+        with self.assertRaises(ValueError):
+            tool.validate_url("https://example.org/\nadmin")
+        self.assertIn(
+            ("encoded first character", "https://example.org/%C3%A9"),
+            tool.path_variants("https://example.org/é"),
+        )
 
     def test_method_probe_requires_opt_in_for_mutating_verbs(self):
         url = self.base + "/admin"
@@ -346,10 +427,14 @@ class ScannerTests(unittest.TestCase):
         result = asyncio.run(tool.run(args))[0]
         self.assertEqual(result["baseline"]["length"], 64)
         self.assertTrue(result["baseline"]["truncated"])
-        raw = tool.send_raw_path(
-            tool.Probe("paths", "raw", "GET", self.base + "/big", raw_path=True),
-            {}, 2, True, 64,
-        )
+        async def raw_request():
+            scanner = tool.Scanner(args)
+            async with httpx.AsyncClient() as client:
+                return await scanner.request(
+                    client, tool.Probe("paths", "raw", "GET",
+                                       self.base + "/big", raw_path=True),
+                )
+        raw = asyncio.run(raw_request())
         self.assertEqual(raw.length, 64)
         self.assertTrue(raw.truncated)
 
@@ -364,6 +449,66 @@ class ScannerTests(unittest.TestCase):
             "/generic", "--checks", "headers", "--header-variant", "X-Generic: yes"
         )))[0]
         self.assertFalse(any(f["name"] == "custom X-Generic #1" for f in result["findings"]))
+
+    def test_dynamic_generic_page_is_not_a_candidate(self):
+        Handler.generic_count = 0
+        result = asyncio.run(tool.run(self.args(
+            "/generic", "--checks", "headers",
+            "--header-variant", "X-Dynamic-Generic: yes",
+        )))[0]
+        self.assertFalse(any(
+            f["name"] == "custom X-Dynamic-Generic #1" for f in result["findings"]
+        ))
+
+    def test_small_protected_tail_is_still_a_candidate(self):
+        result = asyncio.run(tool.run(self.args(
+            "/large", "--checks", "headers",
+            "--header-variant", "X-Large-Generic: yes",
+        )))[0]
+        self.assertTrue(any(
+            f["name"] == "custom X-Large-Generic #1"
+            and f["classification"] == "candidate"
+            for f in result["findings"]
+        ))
+
+    def test_method_override_query_precedes_fragment(self):
+        url = self.base + "/admin?x=1#ignored"
+        self.assertEqual(tool.validate_url(url), self.base + "/admin?x=1")
+        probes = tool.generate_probes(url, {"methods"}, [], [])
+        self.assertTrue(any(
+            p.url == self.base + "/admin?x=1&_method=POST"
+            for p in probes if "_method=POST" in p.name
+        ))
+
+    def test_form_method_override_probe(self):
+        result = asyncio.run(tool.run(self.args(
+            "/formoverride", "--checks", "methods",
+            "--success-regex", "FORM_SECRET",
+        )))[0]
+        self.assertTrue(any(
+            f["name"] == "POST form _method=GET"
+            and f["classification"] == "confirmed"
+            for f in result["findings"]
+        ))
+        probes = tool.generate_probes(
+            self.base + "/formoverride", {"methods"}, [], [],
+            base_body=b"foo=bar", form_body=True,
+        )
+        self.assertTrue(any(
+            p.name == "POST form _method=GET"
+            and p.body == b"foo=bar&_method=GET"
+            for p in probes
+        ))
+        form_result = asyncio.run(tool.run(self.args(
+            "/formbody", "-X", "POST", "-d", "foo=bar",
+            "--header", "Content-Type: application/x-www-form-urlencoded",
+            "--checks", "methods", "--success-regex", "FORM_BODY_SECRET",
+        )))[0]
+        self.assertTrue(any(
+            f["name"] == "POST form _method=GET"
+            and f["classification"] == "confirmed"
+            for f in form_result["findings"]
+        ))
 
 
 if __name__ == "__main__":
