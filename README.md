@@ -22,6 +22,8 @@ fuzzhttpbypass -u https://example.test/admin --header 'Authorization: Bearer TOK
 fuzzhttpbypass -u https://example.test/admin --checks paths headers -i 10.0.0.1
 fuzzhttpbypass -u https://example.test/api/admin -X POST -d '{"action":"read"}' --header 'Content-Type: application/json'
 fuzzhttpbypass -u https://example.test/admin --checks auth --bearer TOKEN --cookie-value admin
+fuzzhttpbypass -u 'https://example.test/admin?authenticated=no' --checks auth --success-regex 'Admin Dashboard'
+fuzzhttpbypass -u https://example.test/admin --checks headers --identity root
 fuzzhttpbypass -u https://example.test/admin --path-variant /ADMIN --header-variant 'X-Allow: yes'
 fuzzhttpbypass --request-file captured-request.txt --request-proto https --success-regex 'Private Data'
 ```
@@ -49,14 +51,19 @@ The baseline's response cookies are carried into subsequent requests unless a
 
 - **Paths:** trailing and duplicate slashes, dot and parent segments, encoded
   separators, semicolon and dot suffixes, case changes, and directory index files.
-- **Methods:** HEAD, POST, OPTIONS, TRACE, PROPFIND, an invented method, and
+- **Methods:** HEAD, POST, OPTIONS, TRACE, PROPFIND, REPORT, SEARCH, QUERY,
+  an invented method, and
   method override headers, query parameters, and form bodies.
   `--unsafe-methods` adds PUT, PATCH, DELETE.
 - **Headers:** forwarding IP, host, protocol and path headers, plus Referer,
-  Origin and User-Agent variants, including alternate loopback forms.
+  Origin, User-Agent, and trusted identity headers such as `X-Remote-User` and
+  `X-SSL-CLIENT-CN`, including alternate loopback forms.
   `-i` adds an IP candidate.
 - **Auth:** Basic or NTLM credentials explicitly supplied with repeated
   `--basic USER:PASS`, `--ntlm DOMAIN\USER:PASS`, or `--bearer TOKEN`.
+  Existing authorization-like query and URL-encoded form parameters are tried
+  with `1`, `true`, `yes`, and `admin`; `--param-value` adds values.
+  `--identity` adds names to the trusted identity header probes.
   `--cookie-value` replaces each observed cookie value in turn. The tool
   does not guess passwords by default.
 - **Protocol:** Accept, Content-Type, Range, Cache-Control, and

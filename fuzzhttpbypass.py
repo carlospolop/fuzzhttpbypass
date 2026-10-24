@@ -17,7 +17,7 @@ import time
 from copy import copy
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import httpx
 
@@ -29,6 +29,14 @@ IP_HEADERS = (
 PATH_HEADERS = ("X-Original-URL", "X-Rewrite-URL", "X-Forwarded-Uri", "X-Original-URI")
 PATH_HEADERS_LOWER = frozenset(header.lower() for header in PATH_HEADERS)
 OVERRIDE_HEADERS = ("X-HTTP-Method-Override", "X-Method-Override", "X-HTTP-Method")
+IDENTITY_HEADERS = (
+    "X-Remote-User", "Remote-User", "X-Authenticated-User",
+    "X-Forwarded-User", "X-User", "X-SSL-CLIENT-CN",
+)
+AUTH_PARAM = re.compile(
+    r"auth|admin|role|priv|access|permission|group|user|account|owner|tenant|debug",
+    re.IGNORECASE,
+)
 CHECKS = ("paths", "methods", "headers", "auth", "protocol")
 VOLATILE_FIELD = re.compile(
     r"(?i)(\b(?:nonce|timestamp|request[_-]?id|trace[_-]?id|csrf(?:token)?)"
@@ -214,7 +222,9 @@ def generate_probes(url: str, checks: set[str], ips: list[str], basic: list[str]
                     custom_headers: list[tuple[str, str]] | None = None,
                     cookies: dict[str, str] | None = None,
                     cookie_values: list[str] | None = None,
-                    form_body: bool = False) -> list[Probe]:
+                    form_body: bool = False,
+                    parameter_values: list[str] | None = None,
+                    identities: list[str] | None = None) -> list[Probe]:
     parts = urlsplit(url)
     path = parts.path or "/"
     probes = []
@@ -241,7 +251,8 @@ def generate_probes(url: str, checks: set[str], ips: list[str], basic: list[str]
                 raw_path="/./" in candidate_path or "/../" in candidate_path)
 
     if "methods" in checks:
-        methods = ["HEAD", "POST", "OPTIONS", "TRACE", "PROPFIND", "INVENTED"]
+        methods = ["HEAD", "POST", "OPTIONS", "TRACE", "PROPFIND", "REPORT",
+                   "SEARCH", "QUERY", "INVENTED"]
         if unsafe_methods:
             methods += ["PUT", "PATCH", "DELETE"]
         for method in methods:
@@ -309,8 +320,45 @@ def generate_probes(url: str, checks: set[str], ips: list[str], basic: list[str]
             headers=(("Origin", f"{parts.scheme}://{parts.netloc}"),))
         for index, (name, value) in enumerate(custom_headers or [], 1):
             add("headers", f"custom {name} #{index}", headers=((name, value),))
+        for identity in dict.fromkeys(["admin", "administrator"] + (identities or [])):
+            if "\r" in identity or "\n" in identity:
+                raise ValueError("Invalid --identity value")
+            for header in IDENTITY_HEADERS:
+                add("headers", f"{header}: {identity}", headers=((header, identity),))
 
     if "auth" in checks:
+        values = list(dict.fromkeys(["1", "true", "yes", "admin"] + (parameter_values or [])))
+        for value in values:
+            if "\r" in value or "\n" in value:
+                raise ValueError("Invalid --param-value")
+        query_pairs = parse_qsl(parts.query, keep_blank_values=True)
+        for index, (name, original) in enumerate(query_pairs):
+            if not AUTH_PARAM.search(name):
+                continue
+            for value in values:
+                if value == original:
+                    continue
+                changed = list(query_pairs)
+                changed[index] = (name, value)
+                probe_url = urlunsplit((
+                    parts.scheme, parts.netloc, parts.path, urlencode(changed), "",
+                ))
+                add("auth", f"query {name} #{index + 1}={value}", probe_url=probe_url)
+        if form_body and base_body is not None:
+            try:
+                form_pairs = parse_qsl(base_body.decode("utf-8"), keep_blank_values=True)
+            except UnicodeDecodeError:
+                form_pairs = []
+            for index, (name, original) in enumerate(form_pairs):
+                if not AUTH_PARAM.search(name):
+                    continue
+                for value in values:
+                    if value == original:
+                        continue
+                    changed = list(form_pairs)
+                    changed[index] = (name, value)
+                    add("auth", f"form {name} #{index + 1}={value}",
+                        body=urlencode(changed).encode())
         for index, credential in enumerate(basic, 1):
             if ":" not in credential:
                 raise ValueError("--basic must be USER:PASS")
@@ -532,7 +580,7 @@ class Scanner:
                                  effective_cookies, self.args.cookie_value,
                                  self.headers.get("content-type", "").lower().startswith(
                                      "application/x-www-form-urlencoded"
-                                 ))
+                                 ), self.args.param_value, self.args.identity)
         if self.args.max_requests:
             probes = probes[:self.args.max_requests]
         findings = []
@@ -556,7 +604,7 @@ class Scanner:
             if probe.category in ("headers", "methods", "auth", "protocol") and not path_override:
                 probe_control = Probe(
                     "control", "same variation on missing path", probe.method,
-                    control_url(url, secrets.token_hex(6)), probe.headers, probe.body,
+                    control_url(probe.url, secrets.token_hex(6)), probe.headers, probe.body,
                     ntlm=probe.ntlm,
                 )
                 control_result = await self.request(client, probe_control, baseline.cookies)
@@ -610,6 +658,10 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--header-variant", action="append", default=[], metavar="NAME: VALUE",
                    help="extra header to try; repeatable")
     p.add_argument("--cookie-value", action="append", default=[], help="replace each response cookie with value")
+    p.add_argument("--param-value", action="append", default=[],
+                   help="additional value for auth-like query/form parameters")
+    p.add_argument("--identity", action="append", default=[],
+                   help="additional identity for trusted-user headers")
     p.add_argument("--checks", nargs="+", choices=CHECKS, default=list(CHECKS))
     p.add_argument("--unsafe-methods", action="store_true", help="include PUT, PATCH and DELETE")
     p.add_argument("--concurrency", type=int, default=5)
