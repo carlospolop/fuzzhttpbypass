@@ -183,6 +183,28 @@ class ScannerTests(unittest.TestCase):
         self.assertEqual(result["baseline"]["status"], 403)
         self.assertTrue(any(f["classification"] == "confirmed" for f in result["findings"]))
 
+    def test_captured_post_request_file(self):
+        body = b'{"token":"abc"}'
+        host = f"127.0.0.1:{self.server.server_port}"
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "request.txt"
+            request_head = (
+                f"POST /post HTTP/1.1\r\nHost: {host}\r\n"
+                f"Content-Type: application/json\r\nContent-Length: {len(body)}\r\n"
+                "\r\n"
+            )
+            path.write_bytes(request_head.encode() + body)
+            args = tool.parser().parse_args([
+                "--request-file", str(path), "--request-proto", "http",
+                "--checks", "headers", "--success-regex", "POST_SECRET", "--rate", "0",
+            ])
+            result = asyncio.run(tool.run(args))[0]
+            self.assertEqual(result["baseline"]["status"], 403)
+            self.assertTrue(any(f["classification"] == "confirmed" for f in result["findings"]))
+            path.write_bytes(path.read_bytes().replace(b"Content-Length: 15", b"Content-Length: 14"))
+            with self.assertRaisesRegex(ValueError, "Content-Length"):
+                tool.load_request_file(path, "http")
+
     def test_repeatable_status_change_is_only_a_candidate(self):
         result = asyncio.run(tool.run(self.args(
             "/candidate", "--checks", "headers"

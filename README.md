@@ -23,6 +23,7 @@ fuzzhttpbypass -u https://example.test/admin --checks paths headers -i 10.0.0.1
 fuzzhttpbypass -u https://example.test/api/admin -X POST -d '{"action":"read"}' --header 'Content-Type: application/json'
 fuzzhttpbypass -u https://example.test/admin --checks auth --bearer TOKEN --cookie-value admin
 fuzzhttpbypass -u https://example.test/admin --path-variant /ADMIN --header-variant 'X-Allow: yes'
+fuzzhttpbypass --request-file captured-request.txt --request-proto https --success-regex 'Private Data'
 ```
 
 The tool sends a baseline GET and a random missing sibling path, then probes
@@ -63,6 +64,10 @@ Use `--checks` to select categories, `--max-requests` to cap probes per URL,
 individual requests. Responses are capped at 1 MiB by default; adjust with
 `--max-response-bytes`. `-b` disables TLS certificate verification.
 `--path-variant` and `--header-variant` add application specific probes.
+The `--request-file` option imports an HTTP/1.0 or HTTP/1.1 request line,
+headers, and body from a captured request. The tool recalculates
+`Content-Length`; it rejects duplicate or folded headers and
+`Transfer-Encoding` templates, which require exact wire-level handling.
 Literal dot path probes use Python's HTTP/1.1 client, which requires a direct
 connection; when `--proxy` is set, those probes appear as request errors in
 the JSON report. NTLM probes also use HTTP/1.1.

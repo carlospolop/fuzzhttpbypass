@@ -16,6 +16,7 @@ import secrets
 import ssl
 import sys
 import time
+from copy import copy
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
@@ -134,6 +135,62 @@ def parse_headers(values: list[str]) -> dict[str, str]:
             raise ValueError(f"Invalid --header: {value!r}")
         headers[name.strip()] = item.strip()
     return headers
+
+
+def load_request_file(path: Path, protocol: str) -> tuple[str, str, bytes, list[str]]:
+    """Read an HTTP/1.x request template, letting the client frame its body."""
+    content = path.read_bytes()
+    if b"\r\n\r\n" in content:
+        head, body = content.split(b"\r\n\r\n", 1)
+        lines = head.split(b"\r\n")
+    elif b"\n\n" in content:
+        head, body = content.split(b"\n\n", 1)
+        lines = head.split(b"\n")
+    else:
+        raise ValueError("Request file needs a blank line after its headers")
+    try:
+        method, target, version = lines[0].decode("ascii").split()
+    except (UnicodeError, ValueError, IndexError) as exc:
+        raise ValueError("Invalid HTTP request line in request file") from exc
+    if not re.fullmatch(r"HTTP/1\.[01]", version):
+        raise ValueError("Request file must contain an HTTP/1.0 or HTTP/1.1 request")
+    parsed = []
+    seen = set()
+    content_length = None
+    host = None
+    for line in lines[1:]:
+        if line[:1] in (b" ", b"\t") or b":" not in line:
+            raise ValueError("Invalid or folded header in request file")
+        name, value = line.split(b":", 1)
+        try:
+            header_name = name.decode("ascii").strip()
+            header_value = value.decode("latin-1").strip()
+        except UnicodeError as exc:
+            raise ValueError("Invalid header in request file") from exc
+        lowered = header_name.lower()
+        if lowered in seen:
+            raise ValueError(f"Duplicate {header_name} header in request file")
+        seen.add(lowered)
+        if lowered == "transfer-encoding":
+            raise ValueError("Transfer-Encoding request templates are unsupported")
+        if lowered == "content-length":
+            try:
+                content_length = int(header_value)
+            except ValueError as exc:
+                raise ValueError("Invalid Content-Length in request file") from exc
+        else:
+            parsed.append(f"{header_name}: {header_value}")
+        if lowered == "host":
+            host = header_value
+    if content_length is not None and content_length != len(body):
+        raise ValueError("Content-Length does not match request body")
+    if target.startswith(("http://", "https://")):
+        url = target
+    elif target.startswith("/") and host:
+        url = f"{protocol}://{host}{target}"
+    else:
+        raise ValueError("Request file needs an absolute URL or origin path with Host")
+    return validate_url(url), method, body, parsed
 
 
 def generate_probes(url: str, checks: set[str], ips: list[str], basic: list[str],
@@ -371,7 +428,7 @@ def send_ntlm(probe: Probe, headers: dict[str, str], timeout: float, verify: boo
 class Scanner:
     def __init__(self, args: argparse.Namespace):
         self.args = args
-        self.headers = {"Accept-Encoding": "identity"}
+        self.headers = httpx.Headers({"Accept-Encoding": "identity"})
         self.headers.update(parse_headers(args.header))
         if args.cookie:
             self.headers["Cookie"] = "; ".join(args.cookie)
@@ -511,6 +568,9 @@ def parser() -> argparse.ArgumentParser:
     target = p.add_mutually_exclusive_group(required=True)
     target.add_argument("-u", "--url", help="HTTP(S) URL to test")
     target.add_argument("-L", "--url-list", type=Path, help="one HTTP(S) URL per line")
+    target.add_argument("--request-file", type=Path, help="HTTP/1.x request template")
+    p.add_argument("--request-proto", choices=("http", "https"), default="https",
+                   help="scheme for an origin-form request file (default: https)")
     p.add_argument("-i", "--ip", action="append", default=[], help="additional forwarded IP; repeatable")
     p.add_argument("-b", "--bypass-verification", action="store_true", help="disable TLS verification")
     p.add_argument("--header", action="append", default=[], help="base request Name: Value; repeatable")
@@ -519,7 +579,7 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--bearer", action="append", default=[], metavar="TOKEN", help="Bearer token")
     p.add_argument("--ntlm", action="append", default=[], metavar="DOMAIN\\USER:PASS",
                    help="NTLM credential; requires the ntlm extra")
-    p.add_argument("-X", "--method", default="GET", help="baseline HTTP method")
+    p.add_argument("-X", "--method", help="baseline HTTP method")
     data = p.add_mutually_exclusive_group()
     data.add_argument("-d", "--data", help="baseline request body")
     data.add_argument("--data-file", type=Path, help="read baseline request body from file")
@@ -543,6 +603,18 @@ def parser() -> argparse.ArgumentParser:
 
 
 async def run(args: argparse.Namespace) -> list[dict]:
+    args = copy(args)
+    if args.request_file:
+        if args.data is not None or args.data_file:
+            raise ValueError("Use the request file body without -d or --data-file")
+        url, file_method, body, file_headers = load_request_file(
+            args.request_file, args.request_proto,
+        )
+        args.url = url
+        args.method = args.method or file_method
+        args.data = body
+        args.header = file_headers + args.header
+    args.method = args.method or "GET"
     args.method = args.method.upper()
     if not re.fullmatch(r"[A-Z!#$%&'*+.^_`|~-]+", args.method):
         raise ValueError("Invalid HTTP method")
