@@ -9,6 +9,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from io import StringIO
 from pathlib import Path
 from typing import ClassVar
+from urllib.parse import parse_qs, urlsplit
 
 import httpx
 
@@ -26,7 +27,19 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         self.paths.append(self.path)
-        if self.headers.get("X-Generic") == "yes":
+        query = parse_qs(urlsplit(self.path).query)
+        if query.get("admin") == ["yes"]:
+            status, body = 200, b"generic query page"
+            self.send_response(status)
+        elif self.path.startswith("/param?"):
+            allowed = query.get("authenticated") == ["yes"]
+            status, body = (200, b"PARAM_SECRET") if allowed else (403, b"denied")
+            self.send_response(status)
+        elif self.path.startswith("/identity"):
+            allowed = self.headers.get("X-Remote-User") == "admin"
+            status, body = (200, b"IDENTITY_SECRET") if allowed else (403, b"denied")
+            self.send_response(status)
+        elif self.headers.get("X-Generic") == "yes":
             status, body = 200, b"generic page"
             self.send_response(status)
         elif self.headers.get("X-Dynamic-Generic") == "yes":
@@ -137,8 +150,28 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(405)
         self.end_headers()
 
+    def do_QUERY(self):
+        if self.path == "/query":
+            payload = b"QUERY_SECRET"
+            self.send_response(200)
+        else:
+            payload = b"missing"
+            self.send_response(404)
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
     def do_POST(self):
         body = self.rfile.read(int(self.headers.get("Content-Length", "0")))
+        if self.path == "/formparam":
+            allowed = self.headers.get("Content-Type") == "application/x-www-form-urlencoded"
+            allowed &= parse_qs(body.decode()).get("role") == ["admin"]
+            payload = b"FORM_PARAM_SECRET" if allowed else b"denied"
+            self.send_response(200 if allowed else 403)
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+            return
         if self.path == "/formbody":
             allowed = body == b"foo=bar&_method=GET"
             allowed &= self.headers.get("Content-Type") == "application/x-www-form-urlencoded"
@@ -508,6 +541,59 @@ class ScannerTests(unittest.TestCase):
             f["name"] == "POST form _method=GET"
             and f["classification"] == "confirmed"
             for f in form_result["findings"]
+        ))
+
+    def test_query_authorization_parameter(self):
+        result = asyncio.run(tool.run(self.args(
+            "/param?authenticated=no", "--checks", "auth",
+            "--success-regex", "PARAM_SECRET",
+        )))[0]
+        self.assertTrue(any(
+            f["name"] == "query authenticated #1=yes"
+            and f["classification"] == "confirmed"
+            for f in result["findings"]
+        ))
+
+    def test_form_authorization_parameter(self):
+        result = asyncio.run(tool.run(self.args(
+            "/formparam", "-X", "POST", "-d", "role=user",
+            "--header", "Content-Type: application/x-www-form-urlencoded",
+            "--checks", "auth", "--success-regex", "FORM_PARAM_SECRET",
+        )))[0]
+        self.assertTrue(any(
+            f["name"] == "form role #1=admin"
+            and f["classification"] == "confirmed"
+            for f in result["findings"]
+        ))
+
+    def test_trusted_identity_header(self):
+        result = asyncio.run(tool.run(self.args(
+            "/identity", "--checks", "headers",
+            "--success-regex", "IDENTITY_SECRET",
+        )))[0]
+        self.assertTrue(any(
+            f["name"] == "X-Remote-User: admin"
+            and f["classification"] == "confirmed"
+            for f in result["findings"]
+        ))
+
+    def test_query_method_reaches_protected_endpoint(self):
+        result = asyncio.run(tool.run(self.args(
+            "/query", "--checks", "methods", "--success-regex", "QUERY_SECRET",
+        )))[0]
+        self.assertTrue(any(
+            f["name"] == "QUERY" and f["classification"] == "confirmed"
+            for f in result["findings"]
+        ))
+
+    def test_query_variation_is_preserved_for_missing_path_control(self):
+        result = asyncio.run(tool.run(self.args(
+            "/genericparam?admin=no", "--checks", "auth",
+        )))[0]
+        self.assertFalse(any(
+            f["name"] == "query admin #1=yes"
+            and f["classification"] in ("confirmed", "candidate")
+            for f in result["findings"]
         ))
 
 
