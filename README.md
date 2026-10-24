@@ -1,36 +1,79 @@
 # FuzzHTTPBypass
 
-This tool use fuuzzing to try to bypass unknown authentication methods, who knows...
+FuzzHTTPBypass checks whether small HTTP request changes alter access to a URL.
+It is intended for authorized testing and CTFs. A response change is not proof
+of access: use a protected-content marker to confirm a result.
 
-This is mainly for CTFs.
+## Install
 
-## Installation
-
-You only need to have installed **wfuzz**
-
-```bash
-pip3 install wfuzz
+```sh
+python3 -m pip install .
 ```
 
-## Features
+Python 3.10 or later is required. Wfuzz is no longer required. Install
+`.[http2]` for HTTP/2, `.[socks]` for SOCKS proxies, or `.[ntlm]` for NTLM.
 
-- [+] Get and show **GET code**, **cookies sent** by server and **content if redirect** (all of this in the provided url)
-- [+] Fuzz **HTTP Verbs(Methods)**: *GET, HEAD, POST, DELETE, CONNECT, OPTIONS, TRACE, PUT, INVENTED*
-- [+] Fuzz **HTTP Headers**: *Forwarded, X-Forwarded-For, X-ProxyUser-Ip, Referer, User-Agent, Cookies*
-- [+] Fuzz **HTTP Authentication**: *Basic and NTLM*
-- [+] **Filter** by code or by words (appearing or not)
-- [+] **Autocontained**
+## Examples
 
-## Example
+```sh
+fuzzhttpbypass -u https://example.test/admin --success-regex 'Admin Dashboard'
+fuzzhttpbypass -L urls.txt --rate 2 --concurrency 2 --json results.json
+fuzzhttpbypass -u https://example.test/admin --header 'Authorization: Bearer TOKEN' --cookie 'session=VALUE'
+fuzzhttpbypass -u https://example.test/admin --checks paths headers -i 10.0.0.1
+fuzzhttpbypass -u https://example.test/api/admin -X POST -d '{"action":"read"}' --header 'Content-Type: application/json'
+fuzzhttpbypass -u https://example.test/admin --checks auth --bearer TOKEN --cookie-value admin
+fuzzhttpbypass -u https://example.test/admin --path-variant /ADMIN --header-variant 'X-Allow: yes'
+```
 
-Show responses that do not return code 403 of url http://example.com/index.php
+The tool sends a baseline GET and a random missing sibling path, then probes
+the selected categories. It does not follow redirects. Each finding is sent
+again before reporting it. For header, method, authentication and protocol
+findings, it also tries the same variation on a missing path to reject generic
+responses.
 
-`./fuzzhttpbypass.py -f notcontains,403 -u http://example.com/index.php`
+| Classification | Meaning |
+| --- | --- |
+| `confirmed` | A repeatable 2xx response contains `--success-regex`, absent from the baseline and missing-path control. |
+| `candidate` | A repeatable response changes a denied or redirecting baseline to a nonempty 2xx response and differs from the missing-path control. Verify it manually. |
+| `changed` | A repeatable response differs but does not establish access. Shown with `--show-changed` or in JSON. |
 
-Responses that do not contains the code 240 (show all) in http://example.com/index.php
+Results include the probe category, method, URL, added headers, status,
+redirect location, size, SHA-256 digest, and whether the body changed between
+repeats. Credential values are redacted.
+The baseline's response cookies are carried into subsequent requests unless a
+`--cookie` or Cookie header is supplied.
 
-`./fuzzhttpbypass.py -f notcontains,240 -u http://example.com/index.php`
+## Checks
 
-Responses that do not contains the word "Invalid" in http://example.com/index.php (Currently, the Wfuzz API has problems with spaces so we can't use them)
+- **Paths:** trailing and duplicate slashes, dot and parent segments, encoded
+  separators, semicolon and dot suffixes, and case changes.
+- **Methods:** HEAD, POST, OPTIONS, TRACE, PROPFIND, an invented method, and
+  common method override headers. `--unsafe-methods` adds PUT, PATCH, DELETE.
+- **Headers:** forwarding IP, host, protocol and path headers, plus Referer,
+  Origin and User-Agent variants. `-i` adds an IP candidate.
+- **Auth:** Basic or NTLM credentials explicitly supplied with repeated
+  `--basic USER:PASS`, `--ntlm DOMAIN\USER:PASS`, or `--bearer TOKEN`.
+  `--cookie-value` replaces each observed cookie value in turn. The tool
+  does not guess passwords by default.
+- **Protocol:** Accept, Content-Type, Range, Cache-Control, and
+  X-Requested-With variants.
 
-`./fuzzhttpbypass.py -f notcontains,Invalid -u http://example.com/index.php`
+Use `--checks` to select categories, `--max-requests` to cap probes per URL,
+`--rate` and `--concurrency` to bound traffic, and `--timeout` to limit
+individual requests. Responses are capped at 1 MiB by default; adjust with
+`--max-response-bytes`. `-b` disables TLS certificate verification.
+`--path-variant` and `--header-variant` add application specific probes.
+Literal dot path probes use Python's HTTP/1.1 client, which requires a direct
+connection; when `--proxy` is set, those probes appear as request errors in
+the JSON report. NTLM probes also use HTTP/1.1.
+
+The old Wfuzz `-W` filter and `-f` examples are removed. Use
+`--success-regex`, `--show-changed`, and the JSON report.
+
+## Testing
+
+```sh
+python3 -m unittest discover -s tests -v
+```
+
+Tests use a local HTTP server; they do not contact external targets.
