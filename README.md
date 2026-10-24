@@ -35,12 +35,13 @@ responses.
 | Classification | Meaning |
 | --- | --- |
 | `confirmed` | A repeatable 2xx response contains `--success-regex`, absent from the baseline and missing-path control. |
-| `candidate` | A repeatable response changes a denied or redirecting baseline to a nonempty 2xx response and differs from the missing-path control. Verify it manually. |
+| `candidate` | A repeatable response changes a denied or redirecting baseline to a 2xx response with content or a new cookie name, and differs from the missing-path control. Verify it manually. |
 | `changed` | A repeatable response differs but does not establish access. Shown with `--show-changed` or in JSON. |
 
 Results include the probe category, method, URL, added headers, status,
 redirect location, size, SHA-256 digest, and whether the body changed between
-repeats. Credential values are redacted.
+repeats. Cookie names and a change indicator are included; cookie and
+credential values are redacted.
 The baseline's response cookies are carried into subsequent requests unless a
 `--cookie` or Cookie header is supplied.
 

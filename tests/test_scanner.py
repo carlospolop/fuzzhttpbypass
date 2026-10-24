@@ -70,6 +70,10 @@ class Handler(BaseHTTPRequestHandler):
             self.send_response(status)
             if status == 302:
                 self.send_header("Location", "/login")
+        elif self.path.startswith("/head"):
+            status, body = 302, b"redirect"
+            self.send_response(status)
+            self.send_header("Location", "/login")
         elif self.path.startswith("/cookie"):
             allowed = "role=admin" in self.headers.get("Cookie", "")
             status, body = (200, b"COOKIE_SECRET") if allowed else (403, b"denied")
@@ -109,6 +113,11 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_HEAD(self):
+        if self.path == "/head":
+            self.send_response(200)
+            self.send_header("Set-Cookie", "adminSession=private; HttpOnly")
+            self.end_headers()
+            return
         self.send_response(405)
         self.end_headers()
 
@@ -242,6 +251,16 @@ class ScannerTests(unittest.TestCase):
             f["classification"] == "candidate"
             and f["name"] == "X-Forwarded-For: 127.0.0.1"
             for f in result["findings"]))
+
+    def test_head_can_grant_session_cookie_without_body(self):
+        result = asyncio.run(tool.run(self.args(
+            "/head", "--checks", "methods"
+        )))[0]
+        finding = next(f for f in result["findings"] if f["name"] == "HEAD")
+        self.assertEqual(finding["classification"], "candidate")
+        self.assertEqual(finding["response"]["length"], 0)
+        self.assertIn("adminSession", finding["response"]["set_cookie_names"])
+        self.assertNotIn("private", json.dumps(result))
 
     def test_custom_cookie_value(self):
         result = asyncio.run(tool.run(self.args(

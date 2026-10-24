@@ -8,6 +8,7 @@ import asyncio
 import base64
 import hashlib
 import http.client
+import http.cookies
 import ipaddress
 import json
 import math
@@ -59,7 +60,9 @@ class Observation:
     cookies: dict[str, str] = field(default_factory=dict)
 
     def public(self) -> dict:
-        return {key: value for key, value in asdict(self).items() if key not in ("body", "cookies")}
+        result = {key: value for key, value in asdict(self).items() if key not in ("body", "cookies")}
+        result["set_cookie_names"] = sorted(self.cookies)
+        return result
 
 
 def validate_url(url: str) -> str:
@@ -334,16 +337,18 @@ def classify(observation: Observation, baseline: Observation, control: Observati
             and not success.search(baseline.body)
             and not success.search(control.body)):
         return "confirmed"
-    if (observation.status, observation.location, observation.digest) == (
-            baseline.status, baseline.location, baseline.digest):
+    if (observation.status, observation.location, observation.digest, observation.cookies) == (
+            baseline.status, baseline.location, baseline.digest, baseline.cookies):
         return None
     if observation.status in (401, 403, 404) or observation.status >= 500:
         return None
-    if observation.digest == control.digest and observation.location == control.location:
+    if (observation.digest == control.digest and observation.location == control.location
+            and set(observation.cookies) == set(control.cookies)):
         return None
+    new_cookie_names = set(observation.cookies) - set(baseline.cookies)
     if (baseline.status in (401, 403, 404) or 300 <= baseline.status < 400) \
             and 200 <= observation.status < 300 \
-            and observation.length > 0:
+            and (observation.length > 0 or new_cookie_names):
         return "candidate"
     return "changed"
 
@@ -367,12 +372,17 @@ def send_raw_path(probe: Probe, headers: dict[str, str], timeout: float,
         content = response.read(max_bytes + 1)
         truncated = len(content) > max_bytes
         content = content[:max_bytes]
+        cookies = http.cookies.SimpleCookie()
+        for name, value in response.getheaders():
+            if name.lower() == "set-cookie":
+                cookies.load(value)
         return Observation(
             status=response.status, location=response.getheader("Location"),
             length=len(content), digest=hashlib.sha256(content).hexdigest(),
             body=content.decode("utf-8", errors="replace"),
             elapsed_ms=round((time.monotonic() - started) * 1000),
             truncated=truncated,
+            cookies={name: morsel.value for name, morsel in cookies.items()},
         )
     except (OSError, http.client.HTTPException, ValueError) as exc:
         return Observation(error=f"{type(exc).__name__}: {exc}",
@@ -543,12 +553,14 @@ class Scanner:
                     return
                 if self.success and self.success.search(control_result.body):
                     return
-                if (control_result.status, control_result.digest, control_result.location) == (
-                        result.status, result.digest, result.location):
+                if (control_result.status, control_result.digest, control_result.location,
+                        set(control_result.cookies)) == (
+                        result.status, result.digest, result.location, set(result.cookies)):
                     return
             findings.append({
                 "classification": kind, "category": probe.category, "name": probe.name,
                 "stable_body": repeat.digest == result.digest,
+                "cookie_changed": result.cookies != baseline.cookies,
                 "request": {"method": probe.method, "url": probe.url,
                             "headers": {k: "<redacted>" if re.search(
                                 r"auth|cookie|token|secret|api.key", k, re.IGNORECASE
