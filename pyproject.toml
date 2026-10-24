@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fuzzhttpbypass"
+version = "2.0.0"
+description = "HTTP access-control bypass probe runner"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = ["httpx>=0.27,<1"]
+
+[project.optional-dependencies]
+http2 = ["httpx[http2]>=0.27,<1"]
+socks = ["httpx[socks]>=0.27,<1"]
+ntlm = ["requests-ntlm>=1.3,<2"]
+
+[project.scripts]
+fuzzhttpbypass = "fuzzhttpbypass:main"
+
+[tool.setuptools]
+py-modules = ["fuzzhttpbypass"]
